@@ -69,7 +69,7 @@ fusedLassoProximalIterationsTaken <- function() {
 #'
 #' @return
 #'
-#' @useDynLib fuser
+#' @useDynLib fuser, .registration=TRUE
 #' @importFrom Rcpp evalCpp
 #'
 .genFusedLassoProximal <- function(X, Y, groups, group.names = sort(unique(groups)),
@@ -134,6 +134,9 @@ fusedLassoProximalIterationsTaken <- function() {
       num.it, penalty.factors, L_U.inv, B.old, mu, W, weighted.delta.f, tol
     )
     .pkg.env$lastNumIters = getNumberNativeIterationsTaken()
+
+    colnames(result) = group.names
+
     return(result)
   } else {
     # Call R function
@@ -219,6 +222,8 @@ fusedLassoProximalIterationsTaken <- function() {
   if (i >= num.it)
     warning("Reached max iterations without convergence.")
 
+  colnames(B.new) = group.names
+
   return(B.new)
 }
 
@@ -247,6 +252,8 @@ fusedLassoProximalIterationsTaken <- function() {
 #' @param penalty.factors Weights for sparsity penalty.
 #' @param conserve.memory Whether to calculate XX and XY on the fly, conserving memory
 #' at the cost of speed. (True by default iff p >= 10000)
+#' @param scaling if TRUE, scale the sum-squared loss for each group by 1/n_k
+#' where n_k is the number of samples in group k.
 #'
 #' @details
 #' The proximal algorithm uses \code{t(X) \%*\% X} and \code{t(X) \%*\% Y}. The function will attempt to
@@ -295,10 +302,14 @@ fusedLassoProximalIterationsTaken <- function() {
 fusedLassoProximal <-
   function(X, Y, groups, lambda, gamma, G, mu = 1e-04, tol = 1e-06,
            num.it = 1000, lam.max = NULL, c.flag = FALSE, intercept = TRUE,
-           penalty.factors = NULL, conserve.memory = p >= 10000) {
+           penalty.factors = NULL, conserve.memory = p >= 10000, scaling=TRUE) {
     group.names = sort(unique(groups))
+
+    # Only used if we are scaling the objective
+    # function by 1/n_k for each group.
     samp.sizes = table(groups)[group.names]
-    # samp.sizes = rle(sort(groups)$values
+    if(!scaling) samp.sizes[] = 1
+
 
     k = length(group.names)
     p = dim(X)[2]
