@@ -72,7 +72,7 @@
 #' transformed.data = generateBlockDiagonalMatrices(X, y, groups, G)
 generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
                                           penalty.factors=rep(1, dim(X)[2]),
-                                          scaling=TRUE) {
+                                          scaling=FALSE) {
   group.names = sort(unique(groups))
   num.groups = length(group.names)
 
@@ -230,5 +230,31 @@ fusedL2DescentGLMNet <- function(transformed.x, transformed.x.f,
     beta.mat[,,lambda.i] = coef.temp[2:length(coef.temp)]
   }
 
+  return(beta.mat)
+}
+
+fusedL2DescentGLMNet <- function(transformed.x, transformed.x.f,
+                                 transformed.y, groups, lambda, gamma,
+                                 ...) {
+  # Incorporate fusion penalty global hyperparameter
+  transformed.x.f = transformed.x.f * sqrt(gamma *
+                                             (dim(transformed.x)[1] + dim(transformed.x.f)[1]))
+  transformed.x = rbind(transformed.x, transformed.x.f)
+  
+  group.names = sort(unique(groups))
+  num.groups = length(group.names)
+  
+  glmnet.result = glmnet(transformed.x, transformed.y, standardize=FALSE, ...)
+  
+  # Change: Create a 2D matrix instead of 3D array since we have only one lambda
+  beta.mat = matrix(NA, dim(transformed.x)[2]/num.groups, num.groups)
+  
+  # Change: No loop needed since lambda is a single value
+  coef.temp = coef.glmnet(glmnet.result,
+                          s=lambda*length(groups)/dim(transformed.x)[1]) # Correction for extra dimensions
+  beta.mat = matrix(coef.temp[2:length(coef.temp)], 
+                    dim(transformed.x)[2]/num.groups, 
+                    num.groups)
+  
   return(beta.mat)
 }

@@ -23,12 +23,12 @@ bigeigen <- function(X, method = "RSpectra") {
         B = cbind(B)
       return(cbind( (A %*% B)[]) )
     }
-
+    
     max.eigen = (irlba(X, 1, 1, mult = matmul)$d[1]) ^ 2
   } else {
     max.eigen = (svds(X, 1)$d[1]) ^ 2
   }
-
+  
   return(max.eigen)
 }
 
@@ -73,17 +73,17 @@ fusedLassoProximalIterationsTaken <- function() {
 #' @importFrom Rcpp evalCpp
 #'
 .genFusedLassoProximal <- function(X, Y, groups, group.names = sort(unique(groups)),
-                                         XX = NULL, XY, p, k, samp.sizes, lambda, gamma,
-                                         C, G, epsilon = 1e-04 * p * dim(C)[2],
-                                         tol = 1e-06, num.it = 1000, lam.max = NULL,
-                                         intercept = TRUE, penalty.factors = NULL,
-                                         X.list = NULL, c.flag = FALSE) {
+                                   XX = NULL, XY, p, k, samp.sizes, lambda, gamma,
+                                   C, G, epsilon = 1e-04 * p * dim(C)[2],
+                                   tol = 1e-06, num.it = 1000, lam.max = NULL,
+                                   intercept = TRUE, penalty.factors = NULL,
+                                   X.list = NULL, c.flag = FALSE) {
   n.c = dim(C)[2]  # Number of constraints, including sparsity
-
+  
   D = 0.5 * p * n.c
-
+  
   mu = epsilon / (2 * D)  # smoothness parameter
-
+  
   if (is.null(lam.max)) {
     if (!is.null(XX)) {
       lam.max = sum(sapply(XX, function(x)
@@ -94,10 +94,10 @@ fusedLassoProximalIterationsTaken <- function() {
       lam.max = sum(sapply(1:length(group.names), function(g)
         bigeigen(X.list[[g]])))  # maximal eigenvalue
     }
-
+    
     G.temp = G
     G.temp[lower.tri(G)] = 0
-
+    
     L_U = lam.max + (lambda ^ 2 + 2 * gamma ^ 2 * max(colSums(G.temp))) /
       mu
   } else {
@@ -106,12 +106,12 @@ fusedLassoProximalIterationsTaken <- function() {
     L_U = lam.max + (lambda ^ 2 + 2 * gamma ^ 2 * max(colSums(G.temp))) /
       mu
   }
-
+  
   gc()
-
+  
   L_U.inv = 1 / L_U
-
-
+  
+  
   if (intercept) {
     W = matrix(0, p + 1, k)
     B.old = matrix(0, p + 1, k)
@@ -121,22 +121,22 @@ fusedLassoProximalIterationsTaken <- function() {
     B.old = matrix(0, p, k)
     weighted.delta.f = matrix(0, p, k)
   }
-
-
+  
+  
   if (c.flag) {
     # Call native function
-
+    
     group.ordering = order(groups)
     Y.sorted = Y[group.ordering]
-
+    
     result = genFusedLassoProximal_loop(
       XX, XY, X.list, Y.sorted, samp.sizes, C, intercept, p, k,
       num.it, penalty.factors, L_U.inv, B.old, mu, W, weighted.delta.f, tol
     )
     .pkg.env$lastNumIters = getNumberNativeIterationsTaken()
-
+    
     colnames(result) = group.names
-
+    
     return(result)
   } else {
     # Call R function
@@ -154,20 +154,20 @@ fusedLassoProximalIterationsTaken <- function() {
 .genFusedLassoProximal.R <- function(Y, groups, group.names, XX, XY, p, k, samp.sizes, lambda, gamma,
                                      C, G, epsilon, tol, num.it, intercept, penalty.factors, X.list,
                                      L_U.inv, B.old, mu, W, weighted.delta.f) {
-
+  
   C.t = t(C)
-
+  
   i = 1
-
+  
   for (i in 1:num.it) {
     # Allow for scaling of penalty on non-intercept variables (not applying to fusion)
-
+    
     if (!is.null(penalty.factors)) {
       B.sparsity = B.old[1:p, ] * matrix(penalty.factors, p, k)
     } else {
       B.sparsity = B.old[1:p, ]
     }
-
+    
     # Need to exclude the intercept variable from the B matrix to avoid penalization
     if (intercept) {
       B.sparsity = rbind(B.sparsity, 0)
@@ -175,14 +175,14 @@ fusedLassoProximalIterationsTaken <- function() {
     } else {
       B.fusion = B.old
     }
-
+    
     A.star = cbind(B.sparsity %*% C[, 1:k], B.fusion %*% C[, (k + 1):dim(C)[2]]) /
       mu
-
+    
     # A.star = (B.star %*% C) / mu
     A.star[A.star > 1] = 1
     A.star[A.star < -1] = -1
-
+    
     # Derivative is zero when taken with respect to each beta[,k.i]
     if (!is.null(XX)) {
       delta.lik <-
@@ -195,35 +195,47 @@ fusedLassoProximalIterationsTaken <- function() {
           samp.sizes[k.i]
       })
     }
-
+    
     delta.f = do.call("cbind", delta.lik) + A.star %*% C.t
-
+    
     B.new = W - L_U.inv * delta.f
-
+    
     weighted.delta.f = weighted.delta.f + L_U.inv * 0.5 * i * delta.f
-
+    
     Z = -weighted.delta.f
-
+    
     W = (i * B.new + 2 * Z) / (i + 2)
-
+    
     i = i + 1
-
+    
     improvement = sum(abs(B.old - B.new))
-
+    
     if (improvement < tol * p)
       break
-
+    
     B.old = B.new
   }
-
+  
   # Store the number of iterations
   .pkg.env$lastNumIters = i
-
+  
   if (i >= num.it)
     warning("Reached max iterations without convergence.")
-
+  
+  for (j in 1:k) {
+    # Account for group-specific scaling if used
+    thresh = lambda / samp.sizes[j]
+    
+    if (intercept) {
+      # Don't threshold the intercept term
+      B.new[1:p, j] = sign(B.new[1:p, j]) * pmax(abs(B.new[1:p, j]) - thresh, 0)
+    } else {
+      B.new[, j] = sign(B.new[, j]) * pmax(abs(B.new[, j]) - thresh, 0)
+    }
+  }
+  
   colnames(B.new) = group.names
-
+  
   return(B.new)
 }
 
@@ -304,30 +316,30 @@ fusedLassoProximal <-
            num.it = 1000, lam.max = NULL, c.flag = FALSE, intercept = TRUE,
            penalty.factors = NULL, conserve.memory = p >= 10000, scaling=TRUE) {
     group.names = sort(unique(groups))
-
+    
     # Only used if we are scaling the objective
     # function by 1/n_k for each group.
     samp.sizes = table(groups)[group.names]
     if(!scaling) samp.sizes[] = 1
-
-
+    
+    
     k = length(group.names)
     p = dim(X)[2]
-
+    
     if (is.null(penalty.factors))
       penalty.factors = rep(1, dim(X)[2])
-
+    
     if (intercept) {
       X = cbind(X, 1)
     }
-
+    
     if (!conserve.memory) {
       # p < 10000 is a rough limit for keeping everything in memory
       XX.list = lapply(group.names, function(x) {
         indices = groups == x
         crossprod(X[indices, ])
       })
-
+      
       XY.list = lapply(group.names, function(x) {
         indices = groups == x
         crossprod(X[indices, ], Y[indices])
@@ -337,22 +349,22 @@ fusedLassoProximal <-
       # Otherwise calculate on the fly (takes longer, but saves memory)
       XX.list = NULL
       XY.list = NULL
-
+      
       # Avoid indexing over large matrix
       X.list = list()
-
+      
       for (k.i in 1:k) {
         X.list[[k.i]] = X[groups == group.names[k.i], ]
       }
-
+      
       X = NULL # No longer need full matrix, delete to save memory
     }
-
-
+    
+    
     C.fusion = matrix(0, k, choose(k, 2))
-
+    
     edge.i = 1
-
+    
     for (i in 1:(k - 1)) {
       for (j in (i + 1):k) {
         C.fusion[i, edge.i] = G[i, j]
@@ -360,11 +372,11 @@ fusedLassoProximal <-
         edge.i = edge.i + 1
       }
     }
-
+    
     C.sparsity = lambda * diag(k)
-
+    
     C = cbind(C.sparsity, gamma * C.fusion)
-
+    
     return(
       .genFusedLassoProximal(
         X, Y, groups, group.names, XX.list, XY.list,
