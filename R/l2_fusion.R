@@ -98,11 +98,11 @@ generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
 
     new.y[row.range] = Y[group.inds]
     new.x[row.range, col.range] = X[group.inds,]
-
+    
     if(scaling) {
-      new.y[row.range] = new.y[row.range]/sum(group.inds)
-      new.x[row.range, col.range] =
-        new.x[row.range, col.range]/sum(group.inds)
+      scale_factor = sqrt(sum(group.inds))
+      new.y[row.range] = new.y[row.range]/scale_factor
+      new.x[row.range, col.range] = new.x[row.range, col.range]/scale_factor
     }
 
     row.start = row.start + sum(group.inds)
@@ -207,13 +207,16 @@ generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
 #'                                      transformed.data$Y, groups,
 #'                                      lambda=c(0,0.001,0.1,1),
 #'                                      gamma=0.001)
-fusedL2DescentGLMNet <- function(transformed.x, transformed.x.f,
-                                 transformed.y, groups, lambda, gamma=1,
-                                 ...) {
-
+fusedL2DescentGLMNet <- function(X, y, groups, G, lambda, gamma=1, ...) {
+  use_scaling = (length(unique(table(groups))) > 1)
+  
+  transformed.data = generateBlockDiagonalMatrices(X, y, groups, G, scaling = use_scaling)
+  transformed.x = transformed.data$X
+  transformed.x.f = transformed.data$X.fused
+  transformed.y = transformed.data$Y
+  
   # Incorporate fusion penalty global hyperparameter
-  transformed.x.f = transformed.x.f * sqrt(gamma *
-                             (dim(transformed.x)[1] + dim(transformed.x.f)[1]))
+  transformed.x.f = transformed.x.f * sqrt(gamma * (dim(transformed.x)[1] + dim(transformed.x.f)[1]))
   transformed.x = rbind(transformed.x, transformed.x.f)
 
   group.names = sort(unique(groups))
@@ -221,40 +224,95 @@ fusedL2DescentGLMNet <- function(transformed.x, transformed.x.f,
 
   glmnet.result = glmnet(transformed.x, transformed.y, standardize=FALSE, ...)
 
-  beta.mat = array(NA, c(dim(transformed.x)[2]/num.groups, num.groups, length(lambda)))
-
-  for(lambda.i in 1:length(lambda)) {
-
-    coef.temp = coef.glmnet(glmnet.result,
-                     s=lambda[lambda.i]*length(groups)/dim(transformed.x)[1]) # Correction for extra dimensions
-    beta.mat[,,lambda.i] = coef.temp[2:length(coef.temp)]
-  }
-
-  return(beta.mat)
-}
-
-fusedL2DescentGLMNet <- function(transformed.x, transformed.x.f,
-                                 transformed.y, groups, lambda, gamma,
-                                 ...) {
-  # Incorporate fusion penalty global hyperparameter
-  transformed.x.f = transformed.x.f * sqrt(gamma *
-                                             (dim(transformed.x)[1] + dim(transformed.x.f)[1]))
-  transformed.x = rbind(transformed.x, transformed.x.f)
-  
-  group.names = sort(unique(groups))
-  num.groups = length(group.names)
-  
-  glmnet.result = glmnet(transformed.x, transformed.y, standardize=FALSE, ...)
-  
-  # Change: Create a 2D matrix instead of 3D array since we have only one lambda
   beta.mat = matrix(NA, dim(transformed.x)[2]/num.groups, num.groups)
   
   # Change: No loop needed since lambda is a single value
-  coef.temp = coef.glmnet(glmnet.result,
-                          s=lambda*length(groups)/dim(transformed.x)[1]) # Correction for extra dimensions
+  # Adjust correction factor based on scaling
+  if(use_scaling) {
+    correction_factor = length(unique(groups)) / dim(transformed.x)[1]
+  } else {
+    correction_factor = length(groups) / dim(transformed.x)[1]
+  }
+  coef.temp = coef(glmnet.result,
+                          s=lambda*correction_factor ) # Correction for extra dimensions
   beta.mat = matrix(coef.temp[2:length(coef.temp)], 
                     dim(transformed.x)[2]/num.groups, 
                     num.groups)
   
   return(beta.mat)
+}
+
+
+
+#' Predict using a fitted fused L2 model
+#'
+#' @param beta.mat Matrix of fitted coefficients (p by k) from fusedL2DescentGLMNet
+#' @param newX New covariates matrix (n_new by p)
+#' @param newGroups Group indicators for new data (length n_new)
+#' @param groups Original group indicators used in training
+#' @param intercept Whether the model includes an intercept
+#'
+#' @return Predicted values (length n_new)
+#' @export
+#'
+#' @examples
+#' # After fitting the model
+#' beta.estimate = fusedL2DescentGLMNet(X, y, groups, G, lambda=0.1, gamma=0.01)
+#' 
+#' # Make predictions on new data
+#' predictions = predictFusedL2(beta.estimate, X_new, groups_new, groups)
+predictFusedL2 <- function(beta.mat, newX, newGroups, groups, intercept=FALSE) {
+  
+  # Get unique group names from training
+  train.group.names = sort(unique(groups))
+  new.group.names = sort(unique(newGroups))
+  
+  # Check if all new groups were seen in training
+  unseen.groups = setdiff(new.group.names, train.group.names)
+  if(length(unseen.groups) > 0) {
+    warning(paste("Unseen groups in new data:", paste(unseen.groups, collapse=", "),
+                  "\nUsing average of all groups for these predictions"))
+  }
+  
+  # Initialize predictions
+  n.new = nrow(newX)
+  predictions = numeric(n.new)
+  
+  # If intercept was used, need to handle it
+  if(intercept) {
+    # The last row of beta.mat contains intercepts
+    p = nrow(beta.mat) - 1
+    intercepts = beta.mat[p+1, ]
+    beta.mat = beta.mat[1:p, , drop=FALSE]
+    newX = cbind(newX, 1)  # Add intercept column
+  }
+  
+  # Make predictions for each group
+  for(group.i in new.group.names) {
+    group.idx = which(newGroups == group.i)
+    
+    if(group.i %in% train.group.names) {
+      # Use the specific group's coefficients
+      group.col = which(train.group.names == group.i)
+      
+      if(intercept) {
+        predictions[group.idx] = newX[group.idx, 1:p] %*% beta.mat[, group.col] + 
+          intercepts[group.col]
+      } else {
+        predictions[group.idx] = newX[group.idx, ] %*% beta.mat[, group.col]
+      }
+    } else {
+      # For unseen groups, use average of all groups
+      avg.beta = rowMeans(beta.mat)
+      
+      if(intercept) {
+        avg.intercept = mean(intercepts)
+        predictions[group.idx] = newX[group.idx, 1:p] %*% avg.beta + avg.intercept
+      } else {
+        predictions[group.idx] = newX[group.idx, ] %*% avg.beta
+      }
+    }
+  }
+  
+  return(predictions)
 }

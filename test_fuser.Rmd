@@ -1,0 +1,344 @@
+```{r}
+library(glmnet)
+library(ggplot2)
+library(fuser)
+
+set.seed(123)
+# Generate simple heterogeneous dataset
+k = 4 # number of groups
+p = 100 # number of covariates
+n.group = 15 # number of samples per group
+sigma = 0.05 # observation noise sd
+groups = rep(1:k, each=n.group) # group indicators
+
+# sparse linear coefficients
+beta = matrix(0, p, k)
+nonzero.ind = rbinom(p*k, 1, 0.025/k) # Independent coefficients
+nonzero.shared = rbinom(p, 1, 0.025) # shared coefficients
+beta[which(nonzero.ind==1)] = rnorm(sum(nonzero.ind), 1, 0.25) 
+beta[which(nonzero.shared==1),] = rnorm(sum(nonzero.shared), -1, 0.25)
+
+X = lapply(1:k, function(k.i) matrix(rnorm(n.group*p),n.group, p)) # covariates 
+y = sapply(1:k, function(k.i) X[[k.i]] %*% beta[,k.i] + rnorm(n.group, 0, sigma)) # response
+X = do.call('rbind', X)
+
+# IMPORTANT: Use the same lambda and ensure convergence
+lambda_value = 0.01  # Using a slightly larger lambda for better convergence
+gamma_value = 0  # No fusion
+
+# Fusion matrix (required by function)
+G = matrix(1, k, k)
+
+# Run fuser with gamma=0 and better convergence settings
+beta_fuser = fusedLassoProximal(X, y, groups, 
+                                lambda = lambda_value, 
+                                gamma = gamma_value,  # No fusion
+                                G = G, 
+                                intercept = FALSE,
+                                scaling = FALSE,      # Don't scale by group size
+                                tol = 1e-12,
+                                num.it = 50000)      # More iterations
+
+# Run glmnet for each group separately
+beta_glmnet = matrix(0, p, k)
+for (k.i in 1:k) {
+  group_idx = which(groups == k.i)
+  X_k = X[group_idx, ]
+  y_k = y[group_idx]
+  
+  # Run glmnet with exact same settings
+  fit_glmnet = glmnet(X_k, y_k, 
+                      lambda = lambda_value,
+                      alpha = 1,  # Lasso
+                      intercept = FALSE,
+                      standardize = FALSE,  # Match fuser
+                      thresh = 1e-12)      # Match tolerance
+  
+  beta_glmnet[, k.i] = as.vector(fit_glmnet$beta)
+}
+
+# Compare coefficients
+comparison_df = data.frame(
+  Fuser = c(beta_fuser),
+  glmnet = c(beta_glmnet),
+  Group = factor(rep(1:k, each=p)),
+  Feature = rep(1:p, k)
+)
+
+# Calculate differences
+comparison_df$Difference = comparison_df$Fuser - comparison_df$glmnet
+
+# Summary statistics
+cat("Maximum absolute difference:", max(abs(comparison_df$Difference)), "\n")
+cat("Mean absolute difference:", mean(abs(comparison_df$Difference)), "\n")
+cat("Correlation:", cor(comparison_df$Fuser, comparison_df$glmnet), "\n")
+
+# Check convergence for non-zero coefficients
+non_zero_mask = abs(comparison_df$Fuser) > 1e-10 | abs(comparison_df$glmnet) > 1e-10
+cat("Max difference for non-zero coefficients:", 
+    max(abs(comparison_df$Difference[non_zero_mask])), "\n\n")
+
+# Visualization 1: Direct comparison
+p1 <- ggplot(comparison_df, aes(x = glmnet, y = Fuser, color = Group)) +
+  geom_point(alpha = 0.7, size = 2) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  labs(title = "Fuser (gamma=0) vs glmnet Coefficients",
+       subtitle = "Points should lie on the diagonal if methods agree",
+       x = "glmnet coefficients",
+       y = "Fuser coefficients") +
+  theme_minimal() +
+  coord_fixed()  # Equal aspect ratio
+
+# Visualization 2: Focus on differences
+p2 <- ggplot(comparison_df, aes(x = Feature, y = Difference, color = Group)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  geom_point(alpha = 0.7) +
+  labs(title = "Coefficient Differences (Fuser - glmnet)",
+       subtitle = paste("Max absolute difference:", round(max(abs(comparison_df$Difference)), 6)),
+       x = "Feature",
+       y = "Difference") +
+  theme_minimal() +
+  facet_wrap(~ Group, ncol = 2) +
+  ylim(-0.1, 0.1)  # Zoom in on differences
+
+print(p1)
+print(p2)
+
+# Test a single feature across groups
+feature_test = 1
+cat("\nDetailed comparison for Feature", feature_test, ":\n")
+feature_data = comparison_df[comparison_df$Feature == feature_test,]
+print(feature_data[, c("Group", "Fuser", "glmnet", "Difference")])
+
+# Alternative test: Use smaller lambda for better convergence
+cat("\n\n--- Testing with smaller lambda ---\n")
+lambda_small = 0.0001
+
+# Run with smaller lambda
+beta_fuser_small = fusedLassoProximal(X, y, groups, 
+                                      lambda = lambda_small, 
+                                      gamma = 0,
+                                      G = G, 
+                                      intercept = FALSE,
+                                      scaling = FALSE,
+                                      tol = 1e-12,
+                                      num.it = 50000)
+
+beta_glmnet_small = matrix(0, p, k)
+for (k.i in 1:k) {
+  group_idx = which(groups == k.i)
+  fit_small = glmnet(X[group_idx, ], y[group_idx], 
+                     lambda = lambda_small,
+                     alpha = 1,
+                     intercept = FALSE,
+                     standardize = FALSE,
+                     thresh = 1e-12)
+  beta_glmnet_small[, k.i] = as.vector(fit_small$beta)
+}
+
+# Compare with smaller lambda
+diff_small = c(beta_fuser_small) - c(beta_glmnet_small)
+cat("Max difference with lambda =", lambda_small, ":", max(abs(diff_small)), "\n")
+
+# Final summary
+cat("\n--- FINAL SUMMARY ---\n")
+if(max(abs(comparison_df$Difference)) < 1e-6) {
+  cat("✓ Success: The coefficients are effectively identical!\n")
+  cat("  fuser with gamma=0 behaves like separate lasso regressions.\n")
+} else {
+  cat("⚠ Warning: There are differences between the methods.\n")
+  cat("  Possible causes:\n")
+  cat("  - Convergence issues (check iteration warnings)\n")
+  cat("  - Different internal scaling/standardization\n")
+  cat("  - Algorithm implementation differences\n")
+  cat("  Max difference:", max(abs(comparison_df$Difference)), "\n")
+}
+
+
+```
+
+
+```{r}
+# Final diagnostic test: Understanding fuser vs glmnet differences
+library(fuser)
+library(glmnet)
+library(ggplot2)
+
+set.seed(123)
+# Generate simple heterogeneous dataset
+k = 4 # number of groups
+p = 100 # number of covariates
+n.group = 15 # number of samples per group
+sigma = 0.05 # observation noise sd
+groups = rep(1:k, each=n.group) # group indicators
+
+# sparse linear coefficients
+beta = matrix(0, p, k)
+nonzero.ind = rbinom(p*k, 1, 0.025/k) # Independent coefficients
+nonzero.shared = rbinom(p, 1, 0.025) # shared coefficients
+beta[which(nonzero.ind==1)] = rnorm(sum(nonzero.ind), 1, 0.25) 
+beta[which(nonzero.shared==1),] = rnorm(sum(nonzero.shared), -1, 0.25)
+
+X = lapply(1:k, function(k.i) matrix(rnorm(n.group*p),n.group, p)) # covariates 
+y = sapply(1:k, function(k.i) X[[k.i]] %*% beta[,k.i] + rnorm(n.group, 0, sigma)) # response
+X = do.call('rbind', X)
+
+# Test with a range of lambda values to find convergence sweet spot
+lambda_values = c(0.1, 0.05, 0.01, 0.005, 0.001)
+results = data.frame()
+
+G = matrix(1, k, k)
+
+cat("Testing fuser vs glmnet across different lambda values...\n\n")
+
+for (lambda in lambda_values) {
+  cat("Lambda =", lambda, "\n")
+  
+  # Run fuser
+  start_time = Sys.time()
+  beta_fuser = tryCatch({
+    fusedLassoProximal(X, y, groups, 
+                       lambda = lambda, 
+                       gamma = 0,
+                       G = G, 
+                       intercept = FALSE,
+                       scaling = FALSE,
+                       tol = 1e-10,
+                       num.it = 100000,  # Even more iterations
+                       c.flag = TRUE)
+  }, warning = function(w) {
+    cat("  Warning:", w$message, "\n")
+    return(fusedLassoProximal(X, y, groups, 
+                              lambda = lambda, 
+                              gamma = 0,
+                              G = G, 
+                              intercept = FALSE,
+                              scaling = FALSE,
+                              tol = 1e-10,
+                              num.it = 100000,
+                              c.flag = TRUE))
+  })
+  fuser_time = difftime(Sys.time(), start_time, units = "secs")
+  
+  # Run glmnet
+  start_time = Sys.time()
+  beta_glmnet = matrix(0, p, k)
+  for (k.i in 1:k) {
+    group_idx = which(groups == k.i)
+    fit_glmnet = glmnet(X[group_idx, ], y[group_idx], 
+                        lambda = lambda,
+                        alpha = 1,
+                        intercept = FALSE,
+                        standardize = FALSE,
+                        thresh = 1e-10)
+    beta_glmnet[, k.i] = as.vector(fit_glmnet$beta)
+  }
+  glmnet_time = difftime(Sys.time(), start_time, units = "secs")
+  
+  # Calculate differences
+  diff = c(beta_fuser) - c(beta_glmnet)
+  
+  # Store results
+  results = rbind(results, data.frame(
+    lambda = lambda,
+    max_diff = max(abs(diff)),
+    mean_diff = mean(abs(diff)),
+    correlation = cor(c(beta_fuser), c(beta_glmnet)),
+    num_nonzero_fuser = sum(abs(beta_fuser) > 1e-10),
+    num_nonzero_glmnet = sum(abs(beta_glmnet) > 1e-10),
+    fuser_time = as.numeric(fuser_time),
+    glmnet_time = as.numeric(glmnet_time)
+  ))
+  
+  cat("  Max difference:", max(abs(diff)), "\n")
+  cat("  Time - fuser:", round(fuser_time, 3), "s, glmnet:", round(glmnet_time, 3), "s\n\n")
+}
+
+# Visualize results
+p1 <- ggplot(results, aes(x = lambda, y = max_diff)) +
+  geom_line() +
+  geom_point(size = 3) +
+  scale_x_log10() +
+  labs(title = "Maximum Difference vs Lambda",
+       x = "Lambda (log scale)",
+       y = "Max |fuser - glmnet|") +
+  theme_minimal()
+
+p2 <- ggplot(results, aes(x = lambda)) +
+  geom_line(aes(y = num_nonzero_fuser, color = "fuser")) +
+  geom_line(aes(y = num_nonzero_glmnet, color = "glmnet")) +
+  geom_point(aes(y = num_nonzero_fuser, color = "fuser"), size = 3) +
+  geom_point(aes(y = num_nonzero_glmnet, color = "glmnet"), size = 3) +
+  scale_x_log10() +
+  labs(title = "Number of Non-zero Coefficients",
+       x = "Lambda (log scale)",
+       y = "Number of non-zero coefficients",
+       color = "Method") +
+  theme_minimal()
+
+print(p1)
+print(p2)
+
+# Test single group to verify algorithm behavior
+cat("\n=== Testing on single group (Group 1) ===\n")
+group1_idx = which(groups == 1)
+X1 = X[group1_idx, ]
+y1 = y[group1_idx]
+
+# Fuser on single group
+lambda_test = 0.01
+beta_fuser_single = fusedLassoProximal(X1, y1, rep(1, length(y1)), 
+                                       lambda = lambda_test, 
+                                       gamma = 0,
+                                       G = matrix(1, 1, 1), 
+                                       intercept = FALSE,
+                                       scaling = FALSE,
+                                       tol = 1e-10,
+                                       num.it = 100000)
+
+# glmnet on single group
+fit_glmnet_single = glmnet(X1, y1, 
+                           lambda = lambda_test,
+                           alpha = 1,
+                           intercept = FALSE,
+                           standardize = FALSE,
+                           thresh = 1e-10)
+
+beta_glmnet_single = as.vector(fit_glmnet_single$beta)
+
+diff_single = beta_fuser_single - beta_glmnet_single
+cat("Max difference (single group):", max(abs(diff_single)), "\n\n")
+
+# Summary table
+cat("\n=== SUMMARY TABLE ===\n")
+print(results)
+
+# Diagnostic: Check if it's a soft thresholding difference
+cat("\n=== DIAGNOSTIC: Soft Thresholding Test ===\n")
+# Compare specific coefficients
+idx_nonzero = which(abs(beta_glmnet[,1]) > 0)[1:3]
+for (idx in idx_nonzero) {
+  cat("Feature", idx, "Group 1:\n")
+  cat("  fuser:", beta_fuser[idx, 1], "\n")
+  cat("  glmnet:", beta_glmnet[idx, 1], "\n")
+  cat("  ratio:", beta_fuser[idx, 1] / beta_glmnet[idx, 1], "\n\n")
+}
+
+# Final conclusion
+cat("\n=== CONCLUSION ===\n")
+if (min(results$max_diff) < 1e-6) {
+  cat("✓ Found lambda values where fuser and glmnet agree!\n")
+  cat("  Best lambda:", results$lambda[which.min(results$max_diff)], "\n")
+} else {
+  cat("The differences persist across all lambda values.\n")
+  cat("Minimum difference found:", min(results$max_diff), "at lambda =", 
+      results$lambda[which.min(results$max_diff)], "\n\n")
+  cat("Possible explanations:\n")
+  cat("1. Different soft-thresholding implementations\n")
+  cat("2. Numerical precision differences in algorithms\n")
+  cat("3. Convergence criteria differences\n")
+  cat("4. Implementation details in how groups are handled\n")
+}
+```
+
+
