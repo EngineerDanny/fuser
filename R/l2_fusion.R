@@ -75,27 +75,27 @@ generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
                                           scaling=FALSE) {
   group.names = sort(unique(groups))
   num.groups = length(group.names)
-
+  
   num.pairs = num.groups*(num.groups-1)/2
-
+  
   if(intercept) X = cbind(X, matrix(1, dim(X)[1], 1)) # Include intercept
-
+  
   new.y = Matrix(0, length(Y)+num.pairs*dim(X)[2],1, sparse=TRUE)
   new.x = Matrix(0, dim(X)[1], dim(X)[2]*num.groups,
                  sparse=TRUE)
   new.x.f = Matrix(0, num.pairs*dim(X)[2], dim(X)[2]*num.groups,
                    sparse=TRUE)
-
+  
   row.start = 1
   col.start = 1
-
+  
   # Add data into block matrix
   for(group.i in 1:num.groups) {
     group.inds = groups==group.names[group.i]
-
+    
     row.range = row.start:(row.start+sum(group.inds)-1)
     col.range = col.start:(col.start+dim(X)[2]-1)
-
+    
     new.y[row.range] = Y[group.inds]
     new.x[row.range, col.range] = X[group.inds,]
     
@@ -104,51 +104,51 @@ generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
       new.y[row.range] = new.y[row.range]/scale_factor
       new.x[row.range, col.range] = new.x[row.range, col.range]/scale_factor
     }
-
+    
     row.start = row.start + sum(group.inds)
     col.start = col.start + dim(X)[2]
   }
-
+  
   col.start.i = 1
   row.start = 1
-
+  
   # Add gamma contraints into block matrix
   for(group.i in 1:(num.groups-1)) {
-
+    
     col.start.j = col.start.i + dim(X)[2]
-
+    
     col.range.i = col.start.i:(col.start.i+dim(X)[2]-1)
-
+    
     for(group.j in (group.i+1):num.groups) {
-
+      
       tau = G[group.i, group.j]
-
+      
       row.range = row.start:(row.start+dim(X)[2]-1)
       col.range.j = col.start.j:(col.start.j+dim(X)[2]-1)
-
+      
       new.x.f[cbind(row.range, col.range.i)] = sqrt(tau)
       new.x.f[cbind(row.range, col.range.j)] = -sqrt(tau)
-
+      
       if(intercept) { # Don't fuse intercept
         new.x.f[row.range[length(row.range)],
                 col.range.i[length(col.range.i)]] = 0
         new.x.f[row.range[length(row.range)],
                 col.range.j[length(col.range.j)]] = 0
       }
-
+      
       row.start = row.start + dim(X)[2]
       col.start.j = col.start.j + dim(X)[2]
     }
-
+    
     col.start.i = col.start.i + dim(X)[2]
   }
-
+  
   if(intercept) {
     penalty = rep(c(penalty.factors, 0), num.groups)
   } else {
     penalty = rep(penalty.factors, num.groups)
   }
-
+  
   return(list(X=new.x, Y=new.y, X.fused=new.x.f, penalty=penalty))
 }
 
@@ -207,8 +207,8 @@ generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
 #'                                      transformed.data$Y, groups,
 #'                                      lambda=c(0,0.001,0.1,1),
 #'                                      gamma=0.001)
-fusedL2DescentGLMNet <- function(X, y, groups, G = NULL, lambda, gamma=1, ...) {
-  use_scaling = (length(unique(table(groups))) > 1)
+fusedL2DescentGLMNet <- function(X, y, groups, lambda = NULL, G = NULL, gamma=1, scaling = FALSE,...) {
+  #use_scaling = (length(unique(table(groups))) > 1)
   
   # Smart default for G
   if(is.null(G)) {
@@ -216,7 +216,7 @@ fusedL2DescentGLMNet <- function(X, y, groups, G = NULL, lambda, gamma=1, ...) {
     G = matrix(1, k, k)
   }
   
-  transformed.data = generateBlockDiagonalMatrices(X, y, groups, G, scaling = use_scaling)
+  transformed.data = generateBlockDiagonalMatrices(X, y, groups, G, scaling = scaling)
   transformed.x = transformed.data$X
   transformed.x.f = transformed.data$X.fused
   transformed.y = transformed.data$Y
@@ -224,24 +224,29 @@ fusedL2DescentGLMNet <- function(X, y, groups, G = NULL, lambda, gamma=1, ...) {
   # Incorporate fusion penalty global hyperparameter
   transformed.x.f = transformed.x.f * sqrt(gamma * (dim(transformed.x)[1] + dim(transformed.x.f)[1]))
   transformed.x = rbind(transformed.x, transformed.x.f)
-
+  
   group.names = sort(unique(groups))
   num.groups = length(group.names)
-
-  glmnet.result = glmnet(transformed.x, transformed.y, standardize=FALSE, ...)
-
-  beta.mat = matrix(NA, dim(transformed.x)[2]/num.groups, num.groups)
   
   # Change: No loop needed since lambda is a single value
   # Adjust correction factor based on scaling
-  if(use_scaling) {
+  if(scaling) {
     correction_factor = length(unique(groups)) / dim(transformed.x)[1]
   } else {
     correction_factor = length(groups) / dim(transformed.x)[1]
   }
   
+  
+  glmnet.result = glmnet(transformed.x, 
+                         transformed.y, 
+                         standardize=FALSE,
+                         intercept = FALSE,
+                         lambda=lambda*correction_factor, ...)
+  beta.mat = matrix(NA, dim(transformed.x)[2]/num.groups, num.groups)
+  
+  
   coef.temp = coef(glmnet.result,
-                          s=lambda*correction_factor ) # Correction for extra dimensions
+                   s=lambda*correction_factor ) # Correction for extra dimensions
   beta.mat = matrix(coef.temp[2:length(coef.temp)], 
                     dim(transformed.x)[2]/num.groups, 
                     num.groups)
