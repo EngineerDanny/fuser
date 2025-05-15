@@ -207,8 +207,14 @@ generateBlockDiagonalMatrices <- function(X, Y, groups, G, intercept=FALSE,
 #'                                      transformed.data$Y, groups,
 #'                                      lambda=c(0,0.001,0.1,1),
 #'                                      gamma=0.001)
-fusedL2DescentGLMNet <- function(X, y, groups, G, lambda, gamma=1, ...) {
+fusedL2DescentGLMNet <- function(X, y, groups, G = NULL, lambda, gamma=1, ...) {
   use_scaling = (length(unique(table(groups))) > 1)
+  
+  # Smart default for G
+  if(is.null(G)) {
+    k = length(sort(unique(groups)))
+    G = matrix(1, k, k)
+  }
   
   transformed.data = generateBlockDiagonalMatrices(X, y, groups, G, scaling = use_scaling)
   transformed.x = transformed.data$X
@@ -233,6 +239,7 @@ fusedL2DescentGLMNet <- function(X, y, groups, G, lambda, gamma=1, ...) {
   } else {
     correction_factor = length(groups) / dim(transformed.x)[1]
   }
+  
   coef.temp = coef(glmnet.result,
                           s=lambda*correction_factor ) # Correction for extra dimensions
   beta.mat = matrix(coef.temp[2:length(coef.temp)], 

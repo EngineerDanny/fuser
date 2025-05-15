@@ -1,4 +1,7 @@
 ```{r}
+# Source your modified file
+source("~/Projects/Open-Source/fuser/R/l1_fusion.R")
+source("~/Projects/Open-Source/fuser/R/l2_fusion.R")
 library(glmnet)
 library(ggplot2)
 
@@ -25,28 +28,7 @@ X = do.call('rbind', X)
 lambda_value = 0.01  # Using a slightly larger lambda for better convergence
 gamma_value = 0  # No fusion
 
-# Fusion matrix (required by function)
-G = matrix(1, k, k)
-
-
-
-```
-
-
-
-```{r}
-# Source your modified file
-source("~/Projects/Open-Source/fuser/R/l1_fusion.R")
-source("~/Projects/Open-Source/fuser/R/l2_fusion.R")
-library(glmnet)
-
-set.seed(123)
-
-#beta_fuser = fusedLassoProximal(X, y, groups, lambda=0.01, gamma=0, 
-#                                G=G, intercept=FALSE, scaling=FALSE)
-
 # Generate block diagonal matrices for L2 fusion approach
-#transformed.data = generateBlockDiagonalMatrices(X, y, groups, G, scaling = F)
 # Use L2 fusion to estimate betas (with near-optimal information sharing among groups)
 beta_fuser = fusedL2DescentGLMNet(X, y, groups, G, lambda=0.035, gamma=0)
 
@@ -68,7 +50,6 @@ cat("Non-zeros glmnet:", sum(abs(beta_glmnet) > 1e-10), "\n")
 ```{r}
 library(glmnet)
 library(Matrix)
-source("~/Projects/Open-Source/fuser/R/l1_fusion.R")
 source("~/Projects/Open-Source/fuser/R/l2_fusion.R")
 
 # Generate data
@@ -101,16 +82,15 @@ groups_train = groups[-test_idx]
 X_test = X[test_idx,]
 y_test = y[test_idx]
 groups_test = groups[test_idx]
-
 # Fit fused L2
 G = matrix(1, k, k)
-beta_fused = fusedL2DescentGLMNet(X_train, y_train, groups_train, G, 
-                                  lambda=0.01, gamma=0.1)
+beta_fused = fusedL2DescentGLMNet(X_train, y_train, groups_train, 
+                                  lambda=0, gamma=0)
 pred_fused = predictFusedL2(beta_fused, X_test, groups_test, groups_train)
 
 # Fit standard glmnet
-glmnet_model = glmnet(X_train, y_train, alpha=1, lambda=0.01, standardize=FALSE)
-pred_glmnet = predict(glmnet_model, newx=X_test, s=0.01)
+glmnet_model = glmnet(X_train, y_train, alpha=1, lambda=0.1, standardize=TRUE)
+pred_glmnet = predict(glmnet_model, newx=X_test, s=0)
 
 # Compare results
 mse_fused = mean((y_test - pred_fused)^2)
@@ -119,5 +99,53 @@ mse_glmnet = mean((y_test - pred_glmnet)^2)
 cat("Fused L2 MSE:", round(mse_fused, 4), "\n")
 cat("glmnet MSE:  ", round(mse_glmnet, 4), "\n")
 cat("Improvement: ", round((mse_glmnet - mse_fused)/mse_glmnet * 100, 2), "%\n")
+```
+
+```{r}
+library(glmnet)
+library(Matrix)
+source("~/Projects/Open-Source/fuser/R/l2_fusion.R")
+# Generate data
+set.seed(123)
+k = 4
+p = 20
+n = 100
+groups = c(rep(1, 40), rep(2, 30), rep(3, 20), rep(4, 10))  # Uneven groups: 40, 30, 20, 10
+# Create coefficients with group structure
+beta = matrix(0, p, k)
+beta[1:5,] = rnorm(5, 2, 0.5)  # Shared features
+for(g in 1:k) {
+  beta[sample(6:p, 2), g] = rnorm(2, 1, 0.5)  # Group-specific
+}
+# Generate X and y
+X = matrix(rnorm(n*p), n, p)
+y = numeric(n)
+for(g in 1:k) {
+  idx = which(groups == g)
+  y[idx] = X[idx,] %*% beta[,g] + rnorm(length(idx), 0, 0.1)
+}
+# Train/test split
+test_idx = sample(1:n, 30)
+X_train = X[-test_idx,]
+y_train = y[-test_idx]
+groups_train = groups[-test_idx]
+X_test = X[test_idx,]
+y_test = y[test_idx]
+groups_test = groups[test_idx]
+# Fit fused L2
+G = matrix(1, k, k)
+beta_fused = fusedL2DescentGLMNet(X_train, y_train, groups_train, 
+                                  lambda=0.001, gamma=0.1)
+pred_fused = predictFusedL2(beta_fused, X_test, groups_test, groups_train)
+# Fit standard glmnet
+glmnet_model = glmnet(X_train, y_train, alpha=1, lambda=0.1, standardize=FALSE)
+pred_glmnet = predict(glmnet_model, newx=X_test, s=0.1)
+# Compare results
+mse_fused = mean((y_test - pred_fused)^2)
+mse_glmnet = mean((y_test - pred_glmnet)^2)
+cat("Fused L2 MSE:", round(mse_fused, 4), "\n")
+cat("glmnet MSE:  ", round(mse_glmnet, 4), "\n")
+cat("Improvement: ", round((mse_glmnet - mse_fused)/mse_glmnet * 100, 2), "%\n")
+
 ```
 
