@@ -41,16 +41,15 @@ G = matrix(1, k, k)
 
 # Use L1 fusion to estimate betas (with near-optimal sparsity and 
 # information sharing among groups)
-beta.estimate = fusedLassoProximal(X, y, groups, lambda=0.001, tol=9e-5, 
-                                   gamma=0.001, G, intercept=FALSE,
-                                   num.it=2000) 
-
-# Generate block diagonal matrices for L2 fusion approach
-transformed.data = generateBlockDiagonalMatrices(X, y, groups, G)
+beta.l1 = fusedLassoProximal(X, y, groups, lambda=0.001, tol=9e-5, 
+                             gamma=0.001, G, intercept=FALSE,
+                             num.it=2000) 
 
 # Use L2 fusion to estimate betas (with near-optimal information sharing among groups)
-beta.estimate = fusedL2DescentGLMNet(transformed.data$X, transformed.data$X.fused, 
-                                     transformed.data$Y, groups, lambda=c(0,0.001,0.1,1),
-                                     gamma=0.001)
+# Note: fusedL2DescentGLMNet now accepts the original X/y/groups and performs
+# the block-diagonal transformation internally.
+beta.l2 = fusedL2DescentGLMNet(X, y, groups,
+                               lambda=0.001,
+                               G=G,
+                               gamma=0.001)
 ```
-

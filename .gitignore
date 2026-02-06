@@ -1,0 +1,19 @@
+.DS_Store
+
+# R session/user files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# R package build/check artifacts
+*.Rcheck/
+*.tar.gz
+
+# Native build artifacts
+src/*.o
+src/*.so
+src/*.dll
+src/*.dylib
+src/*.a
+src/*.dSYM/

@@ -40,21 +40,17 @@ test_that("L1 Fusion: Expect small RMSE between estimated and true beta.", {
   expect_lt(mean((c(beta.estimate)-c(beta))^2), 0.01)
 })
 
-# Generate block diagonal matrices for L2 fusion approach
-transformed.data = generateBlockDiagonalMatrices(X, y, groups, G)
-
 # Use L2 fusion to estimate betas (with near-optimal information sharing among groups)
-beta.estimate = fusedL2DescentGLMNet(transformed.data$X, transformed.data$X.fused,
-                                     transformed.data$Y, groups, lambda=c(0,1e-4,1e-3,1e-2),
+beta.estimate = fusedL2DescentGLMNet(X, y, groups,
+                                     lambda=1e-3,
+                                     G=G,
                                      gamma=1e-3)
 
 
 test_that("L2 Fusion: Expect correlation between estimated and true beta.", {
-  expect_gt(cor(c(beta.estimate[,,2]), c(beta)), 0.9)
+  expect_gt(cor(c(beta.estimate), c(beta)), 0.9)
 })
 
 test_that("L2 Fusion: Expect small RMSE between estimated and true beta.", {
-  expect_lt(mean((c(beta.estimate[,,2])-c(beta))^2), 0.005)
+  expect_lt(mean((c(beta.estimate)-c(beta))^2), 0.005)
 })
-
-
